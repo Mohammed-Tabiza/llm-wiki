@@ -3,7 +3,8 @@ A local LLM wiki maintainer using Ollama and LangChain that reads markdown files
 
 - `llm_wiki_builder.py`: rebuilds the wiki from raw markdown sources
 - `llm_wiki_linter.py`: checks and cleans the generated wiki
-- `llm_wiki_maintainer.py`: a LangChain agent that answers questions about your knowledge base
+- `llm_wiki_maintainer.py`: a FastAPI backend with a LangChain agent that answers questions about your knowledge base
+- `frontend/`: a React UI for browsing and querying the generated wiki
 
 It still does not implement the full incremental maintenance flow from the idea document, but the builder, linter, and query agent follow the same pattern at a smaller scale.
 
@@ -23,6 +24,14 @@ Install the dependencies using pip:
 
 ```bash
 pip install -r requirements.txt
+```
+
+Install the frontend dependencies:
+
+```bash
+cd frontend
+npm install
+cd ..
 ```
 
 Set your Obsidian vault path by updating `OBSIDIAN_DIR` in `llm_wiki_builder.py`, `llm_wiki_linter.py`, and `llm_wiki_maintainer.py`:
@@ -50,8 +59,21 @@ Apply safe mechanical cleanup before linting:
 python llm_wiki_linter.py --apply
 ```
 
-Run the question-answering agent:
+Run the backend API:
 
 ```bash
-streamlit run llm_wiki_maintainer.py
+uvicorn llm_wiki_maintainer:app --reload --host 127.0.0.1 --port 8010
+```
+
+Run the React frontend in another terminal:
+
+```bash
+cd frontend
+npm run dev
+```
+
+Then open:
+
+```text
+http://127.0.0.1:5173
 ```

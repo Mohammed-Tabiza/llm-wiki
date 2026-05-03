@@ -1,12 +1,15 @@
+import json
 import re
 from pathlib import Path
 from urllib.parse import quote
+from uuid import uuid4
 
-import streamlit as st
-from langchain.agents import create_agent
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from langchain.chat_models import init_chat_model
-from langchain_core.tools import tool
-from langgraph.checkpoint.memory import MemorySaver
+from fastapi.responses import StreamingResponse
+from langchain_core.prompts import ChatPromptTemplate
+from pydantic import BaseModel, Field
 
 MODEL_NAME = "ollama:gemma4:31b-cloud"
 OBSIDIAN_DIR = Path(r"C:\Users\moham\Documents\Obsidian Vault")
@@ -14,30 +17,56 @@ WIKI_DIR = OBSIDIAN_DIR / "AI Wiki"
 INDEX_FILE = WIKI_DIR / "index.md"
 VAULT_NAME = OBSIDIAN_DIR.name
 
-AGENT_PROMPT = """
+ANSWER_PROMPT = """
 You answer questions from a local Obsidian wiki.
 
-Workflow:
-- Start by reading `index.md` with `read_index`.
-- Use `list_pages` to discover candidate wiki pages when needed.
-- Use `read_page` to read the most relevant pages before answering.
-- Base the answer only on the wiki files you read.
+Use only the provided wiki context.
 
 Rules:
-- Cite claims inline with clickable markdown links returned by the tools, for example
-  `[learning](obsidian://open?... )`.
+- Answer in the same language as the question.
+- Cite claims inline with the clickable markdown links included in the context.
 - If the wiki does not contain enough information, say so plainly.
-- Keep answers concise and grounded in the wiki.
-- Do not invent page paths. Use the tools.
+- Keep answers concise and practical.
+- Do not invent page paths or citations.
+
+Question:
+{question}
+
+Wiki context:
+{context}
 """
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(min_length=1)
+    thread_id: str | None = None
+
+
+class ChatResponse(BaseModel):
+    answer: str
+    thread_id: str
+
+
+class PageSummary(BaseModel):
+    path: str
+    title: str
+    kind: str
+
+
+class PagesResponse(BaseModel):
+    index_exists: bool
+    pages: list[PageSummary]
+
+
+class PageResponse(BaseModel):
+    path: str
+    title: str
+    content: str
+    obsidian_url: str
+
 
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
-
-
-def write_text(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content.strip() + "\n", encoding="utf-8")
 
 
 def build_wiki_path(path: Path) -> str:
@@ -59,7 +88,13 @@ def build_markdown_link(label: str, file_path: Path) -> str:
 
 
 def get_page_path(wiki_path: str) -> Path:
-    return WIKI_DIR / f"{wiki_path}.md"
+    page_path = (WIKI_DIR / f"{wiki_path}.md").resolve()
+    wiki_root = WIKI_DIR.resolve()
+
+    if page_path != wiki_root and wiki_root not in page_path.parents:
+        raise HTTPException(status_code=400, detail="Invalid wiki path.")
+
+    return page_path
 
 
 def get_wiki_paths() -> list[str]:
@@ -70,33 +105,29 @@ def get_wiki_paths() -> list[str]:
     )
 
 
-@tool
+def get_page_title(content: str, fallback: str) -> str:
+    for line in content.splitlines():
+        if line.startswith("# "):
+            return line.removeprefix("# ").strip()
+    return fallback.rsplit("/", maxsplit=1)[-1]
+
+
 def read_index() -> str:
-    """Read the wiki index. Use this first for every question."""
     return "\n".join(
         [
             f"Citation: {build_markdown_link('index', INDEX_FILE)}",
-            read_text(INDEX_FILE)
+            read_text(INDEX_FILE),
         ]
     )
 
 
-
-@tool
-def list_pages() -> str:
-    """List available wiki page paths excluding index."""
-    return "\n".join(get_wiki_paths())
-
-
-@tool
 def read_page(wiki_path: str) -> str:
-    """Read a wiki page by path like `topics/learning` or `sources/example`."""
     page_path = get_page_path(wiki_path)
     return "\n".join(
         [
-            f"Page: {build_wiki_link(wiki_path)}",
+            f"Page: {wiki_path}",
             f"Citation: {build_markdown_link(wiki_path, page_path)}",
-            read_text(page_path)
+            read_text(page_path),
         ]
     )
 
@@ -106,40 +137,140 @@ model = init_chat_model(
     temperature=0,
     num_predict=512,
 )
-wiki_agent = create_agent(
-    model=model,
-    tools=[read_index, list_pages, read_page],
-    system_prompt=AGENT_PROMPT,
-    checkpointer=MemorySaver()
+answer_prompt = ChatPromptTemplate.from_template(ANSWER_PROMPT)
+answer_chain = answer_prompt | model
+
+app = FastAPI(title="LLM Wiki API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-st.title("LLM Wiki Agent")
-st.caption("Query your Obsidian knowledge base.")
 
-if "messages" not in st.session_state:
-    st.session_state["messages"] = [{"role": "assistant", "content": "How can I help you?"}]
+@app.get("/api/health")
+def health() -> dict[str, str | bool]:
+    return {
+        "status": "ok",
+        "model": MODEL_NAME,
+        "wiki_dir": str(WIKI_DIR),
+        "index_exists": INDEX_FILE.exists(),
+    }
 
-for message in st.session_state["messages"]:
-    st.chat_message(message["role"]).write(message["content"])
 
-question = st.chat_input("Ask a question about your wiki")
+@app.get("/api/pages", response_model=PagesResponse)
+def pages() -> PagesResponse:
+    page_summaries: list[PageSummary] = []
 
-if question:
-    st.session_state["messages"].append({"role": "user", "content": question})
-    st.chat_message("user").write(question)
+    for wiki_path in get_wiki_paths():
+        page_path = get_page_path(wiki_path)
+        content = read_text(page_path)
+        page_summaries.append(
+            PageSummary(
+                path=wiki_path,
+                title=get_page_title(content, wiki_path),
+                kind=wiki_path.split("/", maxsplit=1)[0],
+            )
+        )
 
-    result = wiki_agent.invoke(
-        {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": question
-                }
-            ]
-        },
-        config={"configurable": {"thread_id": "1"}}
+    return PagesResponse(index_exists=INDEX_FILE.exists(), pages=page_summaries)
+
+
+@app.get("/api/page/{wiki_path:path}", response_model=PageResponse)
+def page(wiki_path: str) -> PageResponse:
+    page_path = get_page_path(wiki_path)
+    if not page_path.exists():
+        raise HTTPException(status_code=404, detail="Wiki page not found.")
+
+    content = read_text(page_path)
+    return PageResponse(
+        path=wiki_path,
+        title=get_page_title(content, wiki_path),
+        content=content,
+        obsidian_url=build_obsidian_uri(page_path),
     )
 
-    answer = result["messages"][-1].content
-    st.session_state["messages"].append({"role": "assistant", "content": answer})
-    st.chat_message("assistant").write(answer)
+
+def tokenize(value: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9][a-z0-9-]{2,}", value.lower())
+        if token not in {"the", "and", "for", "avec", "dans", "des", "les", "une", "est"}
+    }
+
+
+def score_page(question_tokens: set[str], wiki_path: str, content: str) -> int:
+    page_text = f"{wiki_path}\n{content}".lower()
+    score = 0
+
+    for token in question_tokens:
+        if token in wiki_path.lower():
+            score += 6
+        score += min(page_text.count(token), 4)
+
+    return score
+
+
+def build_answer_context(question: str, max_pages: int = 4) -> str:
+    question_tokens = tokenize(question)
+    scored_pages: list[tuple[int, str]] = []
+
+    for wiki_path in get_wiki_paths():
+        content = read_text(get_page_path(wiki_path))
+        scored_pages.append((score_page(question_tokens, wiki_path, content), wiki_path))
+
+    selected_paths = [
+        wiki_path
+        for score, wiki_path in sorted(scored_pages, key=lambda item: item[0], reverse=True)
+        if score > 0
+    ][:max_pages]
+
+    if not selected_paths:
+        selected_paths = [wiki_path for _, wiki_path in scored_pages[:max_pages]]
+
+    context_blocks = [read_index()]
+    context_blocks.extend(read_page(wiki_path) for wiki_path in selected_paths)
+    return "\n\n---\n\n".join(context_blocks)
+
+
+@app.post("/api/chat", response_model=ChatResponse)
+def chat(request: ChatRequest) -> ChatResponse:
+    thread_id = request.thread_id or str(uuid4())
+    context = build_answer_context(request.message)
+    result = answer_chain.invoke(
+        {
+            "question": request.message,
+            "context": context,
+        }
+    )
+
+    return ChatResponse(answer=result.content, thread_id=thread_id)
+
+
+@app.post("/api/chat/stream")
+def chat_stream(request: ChatRequest) -> StreamingResponse:
+    thread_id = request.thread_id or str(uuid4())
+
+    def stream_events():
+        yield json.dumps({"type": "thread", "thread_id": thread_id}) + "\n"
+        yield json.dumps({"type": "status", "message": "Searching wiki"}) + "\n"
+        context = build_answer_context(request.message)
+        yield json.dumps({"type": "status", "message": "Answering"}) + "\n"
+
+        for chunk in answer_chain.stream(
+            {
+                "question": request.message,
+                "context": context,
+            }
+        ):
+            if chunk.content:
+                yield json.dumps({"type": "token", "content": chunk.content}) + "\n"
+
+        yield json.dumps({"type": "done"}) + "\n"
+
+    return StreamingResponse(stream_events(), media_type="application/x-ndjson")
