@@ -7,11 +7,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
-MODEL_NAME = "ollama:gemma4:31b-cloud"
-OBSIDIAN_DIR = Path(r"C:\Users\moham\Documents\Obsidian Vault")
-WIKI_DIR = OBSIDIAN_DIR / "AI Wiki"
-INDEX_FILE = WIKI_DIR / "index.md"
-REPORT_FILE = WIKI_DIR / "lint_report.md"
+from wiki_config import INDEX_FILE, REPORT_FILE, WIKI_DIR, get_chat_model_kwargs
 
 LINT_PAGE_PROMPT = """
 You are linting a generated Obsidian LLM wiki page.
@@ -74,11 +70,7 @@ class PageLint:
     should_delete: bool = False
 
 
-llm = init_chat_model(
-    model=MODEL_NAME,
-    temperature=0,
-    num_predict=768,
-)
+llm = init_chat_model(**get_chat_model_kwargs(max_tokens=768))
 structured_llm = llm.with_structured_output(PageLintResult, method="json_mode")
 
 

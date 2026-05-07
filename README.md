@@ -2,6 +2,7 @@
 A local LLM wiki maintainer using Ollama and LangChain that reads markdown files from your Obsidian `Clippings` folder and rebuilds a wiki inside `AI Wiki`. This is based on Andrej Karpathy’s idea. It includes:
 
 - `llm_wiki_builder.py`: rebuilds the wiki from raw markdown sources
+- `llm_wiki_to_markdown.py`: converts PDF and Word documents to markdown sources
 - `llm_wiki_linter.py`: checks and cleans the generated wiki
 - `llm_wiki_maintainer.py`: a LangChain agent that answers questions about your knowledge base
 
@@ -25,13 +26,24 @@ Install the dependencies using pip:
 pip install -r requirements.txt
 ```
 
-Set your Obsidian vault path by updating `OBSIDIAN_DIR` in `llm_wiki_builder.py`, `llm_wiki_linter.py`, and `llm_wiki_maintainer.py`:
+Create a `.env` file from `.env.example` and set your Obsidian vault path there:
 
-```python
-OBSIDIAN_DIR = Path("PUT_YOUR_OBSIDIAN_PATH")
+```env
+MODEL_NAME="openai:Qwen/Qwen3-14B"
+API_BASE="https://example.invalid/v1"
+API_KEY="no-needed"
+OBSIDIAN_DIR=Path(r"PUT_YOUR_OBSIDIAN_PATH")
+WIKI_DIR=OBSIDIAN_DIR / "AI Wiki"
 ```
 
 # Run
+Convert a PDF or Word file to a markdown source in `Clippings`:
+
+```bash
+python llm_wiki_to_markdown.py "path/to/document.pdf"
+python llm_wiki_to_markdown.py "path/to/document.docx"
+```
+
 Build the wiki:
 
 ```bash

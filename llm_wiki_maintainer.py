@@ -8,11 +8,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
 
-MODEL_NAME = "ollama:gemma4:31b-cloud"
-OBSIDIAN_DIR = Path(r"C:\Users\moham\Documents\Obsidian Vault")
-WIKI_DIR = OBSIDIAN_DIR / "AI Wiki"
-INDEX_FILE = WIKI_DIR / "index.md"
-VAULT_NAME = OBSIDIAN_DIR.name
+from wiki_config import INDEX_FILE, OBSIDIAN_DIR, VAULT_NAME, WIKI_DIR, get_chat_model_kwargs
 
 AGENT_PROMPT = """
 You answer questions from a local Obsidian wiki.
@@ -101,11 +97,7 @@ def read_page(wiki_path: str) -> str:
     )
 
 
-model = init_chat_model(
-    model=MODEL_NAME,
-    temperature=0,
-    num_predict=512,
-)
+model = init_chat_model(**get_chat_model_kwargs(max_tokens=512))
 wiki_agent = create_agent(
     model=model,
     tools=[read_index, list_pages, read_page],

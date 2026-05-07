@@ -1,5 +1,6 @@
 import re
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -8,14 +9,16 @@ from langchain.chat_models import init_chat_model
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
-MODEL_NAME = "ollama:gemma4:31b-cloud"
-OBSIDIAN_DIR = Path(r"C:\Users\moham\Documents\Obsidian Vault")
-RAW_DIR = OBSIDIAN_DIR / "Clippings"
-WIKI_DIR = OBSIDIAN_DIR / "AI Wiki"
-SOURCES_DIR = WIKI_DIR / "sources"
-TOPICS_DIR = WIKI_DIR / "topics"
-ENTITIES_DIR = WIKI_DIR / "entities"
-INDEX_FILE = WIKI_DIR / "index.md"
+from wiki_config import (
+    ENTITIES_DIR,
+    INDEX_FILE,
+    OBSIDIAN_DIR,
+    RAW_DIR,
+    SOURCES_DIR,
+    TOPICS_DIR,
+    WIKI_DIR,
+    get_chat_model_kwargs,
+)
 
 ANALYZE_SOURCE_PROMPT = """
 Build a clean knowledge base entry from the source.
@@ -67,11 +70,7 @@ class SourceAnalysisResult(BaseModel):
     entities: list[KnowledgeItem] = Field(description="Up to three concrete named things.")
 
 
-llm = init_chat_model(
-    model=MODEL_NAME,
-    temperature=0,
-    num_predict=512,
-)
+llm = init_chat_model(**get_chat_model_kwargs(max_tokens=512))
 structured_llm = llm.with_structured_output(SourceAnalysisResult, method="json_mode")
 
 
@@ -201,18 +200,41 @@ def render_index_page(
     )
 
 
+def remove_generated_path(path: Path) -> None:
+    for attempt in range(3):
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            return
+        except PermissionError:
+            if attempt == 2:
+                raise
+            path.chmod(0o700)
+            time.sleep(0.3)
+
+
+def clear_generated_directory(directory: Path) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+
+    for child in directory.iterdir():
+        remove_generated_path(child)
+
+
 def clear_generated_wiki() -> None:
-    # This example deletes and rebuilds the generated wiki on every run.
+    # This example clears and rebuilds the generated wiki on every run.
     # That is a deliberate simplification for educational purposes.
     # The original LLM Wiki idea is centered on incremental maintenance:
     # the agent should update an existing persistent wiki rather than recreate it from scratch.
+    # Keep the root generated folders in place because OneDrive/Obsidian can temporarily
+    # lock directories on Windows and make shutil.rmtree fail with WinError 5.
 
     for directory in (SOURCES_DIR, TOPICS_DIR, ENTITIES_DIR):
-        if directory.exists():
-            shutil.rmtree(directory)
+        clear_generated_directory(directory)
 
     if INDEX_FILE.exists():
-        INDEX_FILE.unlink()
+        remove_generated_path(INDEX_FILE)
 
 
 def list_raw_files() -> list[Path]:

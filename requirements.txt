@@ -1,5 +1,10 @@
+edgeparse
 langchain
 langchain-core
 langchain-ollama
+langchain-openai
 langgraph
+mammoth
+markdownify
+python-dotenv
 streamlit
